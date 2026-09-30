@@ -8,13 +8,13 @@ rather than under each family.
 from __future__ import annotations
 
 import warnings
+from typing import Any
 
 import pytest
 
 from mloda.core.abstract_plugins.components.feature import Feature
 from mloda.core.abstract_plugins.components.feature_set import FeatureSet
 from mloda.core.abstract_plugins.components.options import Options
-from mloda.provider import HashableDict
 from mloda.provider import property_spec as _core_property_spec
 
 from open_kgo.feature_groups.kg.base import (
@@ -49,7 +49,7 @@ import_all_kg_readers()
 
 def test_is_valid_credentials_returns_false_on_unknown_key_does_not_raise() -> None:
     """Discovery must not crash on a malformed slot."""
-    bad = HashableDict({"dbt_manifest": {"locator": "/tmp/x.json", "definitely_not_real": "v"}})
+    bad = {"dbt_manifest": {"locator": "/tmp/x.json", "definitely_not_real": "v"}}
     assert DbtManifestReader.is_valid_credentials(bad) is False
 
 
@@ -63,12 +63,12 @@ def test_is_valid_credentials_returns_false_on_strict_enum_violation() -> None:
     universal base, so the seed value moved to a strict
     enum that the concrete still honors.
     """
-    bad = HashableDict({"dbt_manifest": {"locator": "/tmp/x.json", "lineage_direction": "SIDEWAYS"}})
+    bad = {"dbt_manifest": {"locator": "/tmp/x.json", "lineage_direction": "SIDEWAYS"}}
     assert DbtManifestReader.is_valid_credentials(bad) is False
 
 
 def test_is_valid_credentials_returns_false_on_missing_required_keys() -> None:
-    bad = HashableDict({"dbt_manifest": {}})
+    bad: dict[str, Any] = {"dbt_manifest": {}}
     assert DbtManifestReader.is_valid_credentials(bad) is False
 
 
@@ -123,7 +123,7 @@ def test_spec_allowed_values_raises_when_missing() -> None:
 
     ``PropertySpec`` only allows a strict spec with no ``allowed_values`` when
     an ``element_validator`` takes over as the value space; open-kgo's own
-    ``spec_allowed_values`` does not consult ``element_validator``, so such a
+    ``_spec_allowed_values`` does not consult ``element_validator``, so such a
     spec is still a shape error for the KG credential surface.
     """
     spec = _core_property_spec("Bad spec.", strict=True, element_validator=lambda value: True)
