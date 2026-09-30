@@ -9,6 +9,7 @@ tag drawn from the documented vocabularies.
 from __future__ import annotations
 
 from collections import defaultdict
+from importlib.metadata import EntryPoint, entry_points
 
 from open_kgo.feature_groups.kg.base import KgConnectorReaderBase
 from open_kgo.feature_groups.kg.tests._discovery import family_of, family_subpackages, walk_subclasses
@@ -74,3 +75,27 @@ def test_registry_tags_use_known_vocabularies() -> None:
             f"{case.connector_id}: unknown fixture_scope {case.fixture_scope!r}"
         )
         assert case.setup in SETUPS, f"{case.connector_id}: unknown setup {case.setup!r}"
+
+
+def _open_kgo_entry_points(group: str) -> list[EntryPoint]:
+    eps = [ep for ep in entry_points(group=group) if ep.dist is not None and ep.dist.name == "open-kgo"]
+    assert eps, f"no open-kgo '{group}' entry points installed; run `uv sync` to refresh the package metadata."
+    return eps
+
+
+def _family(module: str) -> str:
+    return module.removeprefix("open_kgo.feature_groups.kg.").split(".")[0]
+
+
+def test_entry_points_register_every_connector_once_per_family() -> None:
+    """One ``mloda.feature_groups`` entry point per family, together covering exactly the discovered connectors."""
+    by_family: dict[str, set[str]] = {}
+    for ep in _open_kgo_entry_points("mloda.feature_groups"):
+        family = _family(ep.module)
+        assert family not in by_family, f"two entry points for family {family!r}"
+        classes = ep.load()
+        assert {_family(c.__module__) for c in classes} == {family}, f"{ep.name} mixes families: {classes}"
+        by_family[family] = {c.READER_CLASS.CONNECTOR_ID for c in classes}
+
+    assert set(by_family) == family_subpackages()
+    assert set().union(*by_family.values()) == discovered_connector_ids()

@@ -63,3 +63,27 @@ def test_load_rdf_graph_still_works_with_rdflib_present(tmp_path: Path) -> None:
     path.write_text('<urn:s> <urn:p> "o" .\n', encoding="utf-8")
     graph = load_rdf_graph("test", path)
     assert len(graph) == 1
+
+
+def test_plugin_loader_all_skips_exactly_the_families_whose_backends_are_missing() -> None:
+    """With every declared optional backend blocked, ``PluginLoader.all()`` skips those four families and no other."""
+    code = textwrap.dedent(
+        """
+        import sys
+
+        from open_kgo.feature_groups.kg import optional_deps
+
+        # A None entry raises ModuleNotFoundError(name=root), the shape mloda attributes to a declared root.
+        for root in {*optional_deps.RDF, *optional_deps.EMBEDDED, *optional_deps.NETWORK_PG, *optional_deps.AGENT_MEMORY}:
+            sys.modules[root] = None
+
+        from mloda.user import PluginLoader
+
+        PluginLoader.all()
+        skipped = {key.split(" ")[0] for key in PluginLoader.skipped_plugins() if key.startswith("open-kgo-")}
+        expected = {"open-kgo-rdf", "open-kgo-embedded", "open-kgo-network-pg", "open-kgo-agent-memory"}
+        assert skipped == expected, skipped
+        """
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr

@@ -1,4 +1,4 @@
-"""Load-behavior contract tests: multi-feature guard, idempotence, mutation safety, e2e.
+"""Load-behavior contract tests: multi-feature guard, idempotence, mutation safety, e2e, identity, row counts.
 
 One of the four concern mixins aggregated by ``KgConnectorContractBase``
 (see ``kg_contract.py``). Everything here runs the reader's real load path,
@@ -10,15 +10,19 @@ surface here rather than silently passing.
 from __future__ import annotations
 
 import copy
+import os
 
 import pytest
 
 from mloda.core.abstract_plugins.components.feature_set import FeatureSet
-from mloda.provider import HashableDict
+from mloda.provider import BaseInputData, HashableDict
 from mloda.user import Feature
 
-from open_kgo.feature_groups.kg.tests._helpers import canonical_row_key, run_query
+from open_kgo.feature_groups.kg.base import ParamReader, PythonDictFramework
+from open_kgo.feature_groups.kg.tests._helpers import canonical_row_key, run_query, run_scoped_query
 from open_kgo.feature_groups.kg.tests.contract_adapters import KgContractAdapterBase
+
+_SECRET = "s3cr3t-must-not-leak"
 
 
 class LoadBehaviorContract(KgContractAdapterBase):
@@ -158,3 +162,55 @@ class LoadBehaviorContract(KgContractAdapterBase):
             f"{cls.__name__} returned zero rows for the canonical feature {feat.name!r}; "
             f"adapters must seed at least one row so expected_row_shape asserts shape, not size."
         )
+
+    def test_feature_scoped_data_access_matches_the_global_path(self) -> None:
+        """Credentials on the feature's options under the reader's name select only this reader, same rows."""
+        cls = self.connector_reader_class()
+        slot = self.valid_credentials()[cls.CONNECTOR_ID]
+        feat = self.feature_under_test()
+        scoped = run_scoped_query(cls, slot, feat)
+        assert scoped, f"{cls.__name__}: feature-scoped access returned no rows."
+        assert sorted(scoped, key=canonical_row_key) == sorted(
+            run_query(cls.CONNECTOR_ID, slot, feat), key=canonical_row_key
+        )
+
+    def test_data_access_identity_names_the_source_and_no_secret(self) -> None:
+        """The identity extenders see on INPUT_DATA_LOAD is the source (or mloda's default), never a secret."""
+        cls = self.connector_reader_class()
+        creds = copy.deepcopy(self.valid_credentials())
+        slot = creds[cls.CONNECTOR_ID]
+        slot["password"] = _SECRET
+        identity = cls.data_access_identity(creds)
+        assert _SECRET not in identity, identity
+
+        source = slot.get(cls.SOURCE_SLOT) if cls.SOURCE_SLOT else None
+        if source is not None and os.path.exists(str(source)):
+            assert identity == str(source)
+            for alias in cls._source_keys()[1:]:
+                assert cls.data_access_identity({cls.CONNECTOR_ID: {alias: source}}) == str(source)
+        else:
+            assert identity == BaseInputData.data_access_identity(creds)
+
+        if cls.SOURCE_SLOT:
+            slot[cls.SOURCE_SLOT] = f"file://user:{_SECRET}@host/graph.ttl?token={_SECRET}#{_SECRET}"
+            assert _SECRET not in cls.data_access_identity(creds)
+        assert isinstance(cls.data_access_identity({cls.CONNECTOR_ID: "not-a-slot"}), str)
+
+    def test_count_rows_matches_the_load(self) -> None:
+        """``count_rows`` equals the load's row count, capped by ``result_limit``; None unless ``ROWS_FROM_SLOT``."""
+        cls = self.connector_reader_class()
+        creds = self.valid_credentials()
+        count = cls.count_rows(creds, PythonDictFramework)
+        if not cls.ROWS_FROM_SLOT:
+            assert count is None
+            return
+
+        assert issubclass(cls, ParamReader) and not cls.PARAMS_MAPPING, (
+            f"{cls.__name__}: ROWS_FROM_SLOT needs a ParamReader without per-call params."
+        )
+        rows = run_query(cls.CONNECTOR_ID, creds[cls.CONNECTOR_ID], self.feature_under_test())
+        assert count == len(rows)
+        assert len(rows) > 1, f"{cls.__name__}: the cap check below needs a fixture with more than one row."
+        capped = copy.deepcopy(creds)
+        capped[cls.CONNECTOR_ID]["result_limit"] = 1
+        assert cls.count_rows(capped, PythonDictFramework) == 1
