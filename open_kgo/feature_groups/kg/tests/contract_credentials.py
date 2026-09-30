@@ -12,7 +12,8 @@ from typing import Any
 
 import pytest
 
-from mloda.user import Credential
+from mloda.steward import resolve_feature
+from mloda.user import Credential, DataAccessCollection
 
 from open_kgo.feature_groups.kg.errors import (
     InvalidCredentialShape,
@@ -233,6 +234,9 @@ class CredentialContract(KgContractAdapterBase):
         non-dict value (e.g. a bare path string) raises
         ``InvalidCredentialShape`` so the typo surfaces instead of silently
         masquerading as "no plugin matched".
+
+        On the ``run_all`` path, the decline is recorded as a match rejection naming the reader and
+        error type, never the slot values; absent and foreign slots record nothing.
         """
         cls = self.connector_reader_class()
         creds = {cls.CONNECTOR_ID: "this-should-be-a-dict-but-isnt"}
@@ -244,6 +248,25 @@ class CredentialContract(KgContractAdapterBase):
         # Credential belongs in DataAccessCollection; a direct call takes the plain dict.
         with pytest.raises(InvalidCredentialShape, match="got Credential"):
             cls.connect(Credential(self.valid_credentials()))
+
+        secret = "s3cr3t-slot-value"
+        reason = f"{cls.__name__}: the {cls.CONNECTOR_ID!r} credential slot is present but invalid"
+        bad_limit = {**next(iter(self.valid_credentials().values())), "result_limit": secret}
+        for slot in (secret, bad_limit):
+            error = self._resolution_error({cls.CONNECTOR_ID: slot})
+            assert reason in error and "(InvalidCredentialShape)" in error, f"{cls.__name__}: {error}"
+            assert secret not in error, f"{cls.__name__}: {error}"
+        for silent in ({cls.CONNECTOR_ID: None}, {"some_other_connector_xyz": secret}):
+            assert reason not in self._resolution_error(silent), f"{cls.__name__}: {silent} recorded a rejection."
+        # A name outside this reader's namespace never probes its credentials.
+        foreign = self._resolution_error({cls.CONNECTOR_ID: secret}, name="some_other_connector_xyz__rows")
+        assert reason not in foreign, f"{cls.__name__}: {foreign}"
+
+    def _resolution_error(self, credentials: dict[str, Any], name: str | None = None) -> str:
+        """Return the resolution error text for ``feature_under_test`` (or ``name``) under ``credentials``."""
+        feature = self.feature_under_test()
+        dac = DataAccessCollection(credentials=Credential(credentials))
+        return resolve_feature(name or feature.name, options=feature.options, data_access_collection=dac).error or ""
 
     def test_is_valid_credentials_is_matcher_safe_against_misbehaving_mapping(self) -> None:
         """``is_valid_credentials`` must not propagate non-``InvalidCredentialShape`` exceptions.

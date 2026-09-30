@@ -69,7 +69,7 @@ from types import MappingProxyType
 from typing import Any, ClassVar, Mapping
 
 from mloda.core.abstract_plugins.components.feature_set import FeatureSet
-from mloda.provider import CHAIN_SEPARATOR, ComputeFramework
+from mloda.provider import CHAIN_SEPARATOR, INPUT_DATA_STAGE, ComputeFramework, record_match_rejection
 from mloda.user import DataAccessCollection, Options
 from mloda_plugins.feature_group.input_data.read_db import ReadDB
 
@@ -79,6 +79,7 @@ from open_kgo.feature_groups.kg.composition import (  # noqa: F401 -- back-compa
     narrow_property_mapping,
 )
 from open_kgo.feature_groups.kg.credentials import CredentialRules
+from open_kgo.feature_groups.kg.errors import InvalidCredentialShape
 from open_kgo.feature_groups.kg.spec import property_spec
 
 
@@ -346,7 +347,8 @@ class KgConnectorReaderBase(CredentialRules, ReadDB):
         therefore part of the matcher-safety contract, not a swallowed bug.
         Loud-failure diagnostics for malformed slots and content errors live
         in ``_extract_slot`` and ``_validate_shape``, which direct callers
-        invoke separately.
+        invoke separately. A present but malformed own slot records a match
+        rejection naming the error type only, since the message may echo a secret.
         """
         if not cls.CONNECTOR_ID:
             return False
@@ -355,6 +357,14 @@ class KgConnectorReaderBase(CredentialRules, ReadDB):
             if creds is None:
                 return False
             cls._validate_shape(creds)
+        except InvalidCredentialShape as exc:
+            record_match_rejection(
+                cls.get_class_name(),
+                f"{cls.get_class_name()}: the {cls.CONNECTOR_ID!r} credential slot is present but invalid "
+                f"({type(exc).__name__}); call {cls.get_class_name()}.connect() with the same dict for details",
+                stage=INPUT_DATA_STAGE,
+            )
+            return False
         except Exception:
             return False
         return True
@@ -370,6 +380,12 @@ class KgConnectorReaderBase(CredentialRules, ReadDB):
         return bool(name) and not name.startswith("_") and CHAIN_SEPARATOR not in name
 
     @classmethod
+    def _in_namespace(cls, feature_names: list[str]) -> bool:
+        """True if a name starts with ``<CONNECTOR_ID>__``; other names never probe this reader's credentials."""
+        prefix = f"{cls.CONNECTOR_ID}{CHAIN_SEPARATOR}"
+        return bool(cls.CONNECTOR_ID) and any(str(name).startswith(prefix) for name in feature_names)
+
+    @classmethod
     def is_final_reader(cls) -> bool:
         # Hides KG readers from the stock ReadDBFeature's subclass walk; each KG FeatureGroup matches its own reader
         # in feature_scope_data_access and match_data_access below.
@@ -381,7 +397,7 @@ class KgConnectorReaderBase(CredentialRules, ReadDB):
         for key in options.keys():
             if cls.deal_with_base_input_data_name_as_cls_or_str(key) != cls.data_access_name():
                 continue
-            if not cls.CONNECTOR_ID or not cls._reader_options_admit(options, record_absence=True):
+            if not cls._in_namespace([feature_name]) or not cls._reader_options_admit(options, record_absence=True):
                 return False
             matched = cls.match_subclass_data_access(options.get(key), [feature_name], options=options)
             if matched:
@@ -398,7 +414,7 @@ class KgConnectorReaderBase(CredentialRules, ReadDB):
         options: Options | None = None,
     ) -> tuple[Any, Any]:
         """Match only this reader, never a sibling found by walking subclasses."""
-        if not cls.CONNECTOR_ID or not cls._reader_options_admit(options, record_absence=False):
+        if not cls._in_namespace(feature_names) or not cls._reader_options_admit(options, record_absence=False):
             return None, None
         matched = cls.match_subclass_data_access(data_access_collection, feature_names, options=options)  # type: ignore[arg-type]
         return (cls, matched) if matched else (None, None)
