@@ -117,17 +117,15 @@ class ParamReader(KgConnectorReaderBase):
         ``build_params`` (some only consume credentials), so the stripped-key
         rejection cannot live solely in ``build_params``. Hooking it into
         ``load`` ensures every ParamReader concrete enforces the contract
-        regardless of its ``load_data`` shape. The single-feature guard runs
-        first so a multi-feature FeatureSet does not silently feed the
-        first-iterated feature into ``_reject_stripped_params``.
+        regardless of its ``load_data`` shape. ``super().load`` runs the
+        single-feature guard; a stripped key on the first feature is an error either way.
         """
-        cls._assert_single_feature(features)
         cls._reject_stripped_params(features)
         return super().load(data_access, features)
 
     @classmethod
     def _reject_stripped_params(cls, features: FeatureSet) -> None:
-        """Raise if any family-declared but concrete-stripped param is set on the feature.
+        """Raise if any family-declared but concrete-stripped param is set on a feature.
 
         This is the per-call enforcement of option 1 of the "Honest credential
         surface" rule (see the ``kg.reader_base`` module docstring): a param the concrete
@@ -140,8 +138,7 @@ class ParamReader(KgConnectorReaderBase):
         """
         if not cls._STRIPPED_PARAMS:
             return
-        feature = next(iter(features.features))
-        for stripped in cls._STRIPPED_PARAMS:
+        for feature, stripped in ((f, s) for f in features.features for s in cls._STRIPPED_PARAMS):
             if stripped in feature.options.context:
                 raise InvalidCredentialShape(
                     f"{cls.CONNECTOR_ID}.params.{stripped}: this concrete plugin does not honor the "

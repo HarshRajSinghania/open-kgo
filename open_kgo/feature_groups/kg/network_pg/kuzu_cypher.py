@@ -14,8 +14,7 @@ process-wide by absolute path (see ``kg.fixtures.load_kuzu_database``)
 so a 100-feature ``mloda.run_all`` opens the DB once instead of 100x
 (repeated full re-parse of the same source, plus native FD leak). Each call
 builds a fresh ``kuzu.Connection(db)`` on top of the cached Database;
-the Connection is caller-owned and may be closed by direct callers
-without poisoning the cache.
+``_load_rows`` closes it, and a direct ``connect()`` caller owns and closes its own.
 """
 
 from __future__ import annotations
@@ -49,8 +48,7 @@ class KuzuCypherReader(NetworkPropertyGraphReader):
         """Return a fresh ``kuzu.Connection`` on top of the path-cached Database.
 
         Native FDs live on the cached ``kuzu.Database``; the Connection
-        layer is cheap and remains caller-owned (the matcher contract
-        test closes it). Two callers with the same ``locator`` share
+        layer is cheap and caller-owned. Two callers with the same ``locator`` share
         one Database; external mutations to the DB directory will NOT
         refresh the cache (Kuzu writes to its own directory during
         normal operation, so mtime keying is unsafe — see
@@ -62,18 +60,17 @@ class KuzuCypherReader(NetworkPropertyGraphReader):
     @classmethod
     def _load_rows(cls, ctx: LoadContext, connection: Any, features: FeatureSet) -> list[dict[str, Any]]:
         conn = connection
-
-        query_text = cls.build_query(features)
-        result_obj = conn.execute(query_text)
         rows: list[dict[str, Any]] = []
-        # kuzu returns either a single QueryResult or a list of QueryResult.
-        results = result_obj if isinstance(result_obj, list) else [result_obj]
-        for r in results:
-            columns = r.get_column_names()
-            while r.has_next():
-                rows.append(dict(zip(columns, r.get_next())))
-                if len(rows) >= ctx.result_limit:
-                    return rows
+        try:
+            result_obj = conn.execute(cls.build_query(features))
+            # kuzu returns either a single QueryResult or a list of QueryResult.
+            results = result_obj if isinstance(result_obj, list) else [result_obj]
+            for r in results:
+                columns = r.get_column_names()
+                while r.has_next() and len(rows) < ctx.result_limit:
+                    rows.append(dict(zip(columns, r.get_next())))
+        finally:
+            conn.close()
         return rows
 
 
