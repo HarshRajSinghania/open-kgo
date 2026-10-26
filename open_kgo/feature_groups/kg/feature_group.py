@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from mloda.core.abstract_plugins.components.input_data.source_feature_group import HANDLE_SPEC  # not in mloda.provider
 from mloda.provider import (
     CHAIN_SEPARATOR,
     COLUMN_SEPARATOR,
     HANDLE_OPTION,
+    HANDLE_SPEC,
     INPUT_DATA_STAGE,
     QUERY_OPTION,
     ClaimRoute,
@@ -77,20 +77,13 @@ class KgConnectorFeatureGroupBase(SourceFeatureGroup):
         options: Options,
         data_access_collection: DataAccessCollection | None = None,
     ) -> bool:
-        """Gate on the KG name shape first; record why a pointed or ``query_text``-less request declines."""
+        """Gate on the KG name shape first, so a foreign name never probes this reader's credentials."""
         name, group, reader = str(feature_name), cls.get_class_name(), cls.READER_CLASS
-        if issubclass(reader, KgConnectorReaderBase):
-            if not reader.claims_feature_name(name):
-                if cls.is_pointed(name, options, data_access_collection):
-                    reason = f"{group} claims only '{reader.CONNECTOR_ID}__<name>' names, not '{name}'"
-                    record_match_rejection(group, reason, stage=INPUT_DATA_STAGE)
-                return False
-            # An absent required option skips the claim route without a reason; a blank one fails _QUERY_SPEC.
-            if cls.serves_query_text() and options.get(QUERY_OPTION) is None:
-                record_match_rejection(
-                    group, f"{group} needs the option '{QUERY_OPTION}' for '{name}'", stage=INPUT_DATA_STAGE
-                )
-                return False
+        if issubclass(reader, KgConnectorReaderBase) and not reader.claims_feature_name(name):
+            if cls.is_pointed(name, options, data_access_collection):
+                reason = f"{group} claims only '{reader.CONNECTOR_ID}__<name>' names, not '{name}'"
+                record_match_rejection(group, reason, stage=INPUT_DATA_STAGE)
+            return False
         return super().match_feature_group_criteria(feature_name, options, data_access_collection)
 
     @classmethod
@@ -134,6 +127,11 @@ class KgConnectorFeatureGroupBase(SourceFeatureGroup):
         return cls.READER_CLASS.load(match.access, features)
 
     @classmethod
+    def neutral_type(cls, match: SourceMatch) -> type | None:
+        """Readers return a columnar dict, so a run without ``compute_frameworks`` stays on PythonDict."""
+        return dict
+
+    @classmethod
     def count_rows(cls, match: SourceMatch, compute_framework: type[ComputeFramework]) -> int | None:
         return cls.READER_CLASS.count_rows(match.access, compute_framework)
 
@@ -149,9 +147,15 @@ class KgConnectorFeatureGroupBase(SourceFeatureGroup):
 
     @classmethod
     def supports_compute_framework(
-        cls, feature_name: FeatureName | str, options: Options, compute_framework: type[ComputeFramework]
+        cls,
+        feature_name: FeatureName | str,
+        options: Options,
+        compute_framework: type[ComputeFramework],
+        *,
+        part: str | None = None,
     ) -> bool:
         """Whole rows hold native objects only PythonDict keeps; a ``~<row_key>`` projection is a plain column."""
-        if not issubclass(compute_framework, PythonDictFramework) and COLUMN_SEPARATOR not in str(feature_name):
+        projection = part is not None or COLUMN_SEPARATOR in str(feature_name)
+        if not issubclass(compute_framework, PythonDictFramework) and not projection:
             return False
-        return super().supports_compute_framework(feature_name, options, compute_framework)
+        return super().supports_compute_framework(feature_name, options, compute_framework, part=part)
