@@ -72,32 +72,32 @@ class TestBfsFrontierWalk:
 
 class TestBfsCollectIds:
     def test_start_is_included(self) -> None:
-        graph = {"a": ["b"]}
+        graph = {"a": ["b"], "b": []}
         ids = bfs_collect_ids(lambda n: n in graph, _neighbors(graph), "a", depth=1)
         assert ids == ["a", "b"]
 
     def test_missing_start_returns_empty(self) -> None:
-        graph = {"a": ["b"]}
+        graph = {"a": ["b"], "b": []}
         ids = bfs_collect_ids(lambda n: n in graph, _neighbors(graph), "missing")
         assert ids == []
 
     def test_depth_limits_hops(self) -> None:
-        graph = {"a": ["b"], "b": ["c"], "c": ["d"]}
+        graph = {"a": ["b"], "b": ["c"], "c": ["d"], "d": []}
         ids = bfs_collect_ids(lambda n: n in graph, _neighbors(graph), "a", depth=1)
         assert ids == ["a", "b"]
 
     def test_depth_none_walks_whole_graph(self) -> None:
-        graph = {"a": ["b"], "b": ["c"], "c": ["d"]}
+        graph = {"a": ["b"], "b": ["c"], "c": ["d"], "d": []}
         ids = bfs_collect_ids(lambda n: n in graph, _neighbors(graph), "a", depth=None)
         assert ids == ["a", "b", "c", "d"]
 
     def test_max_nodes_caps_result(self) -> None:
-        graph = {"a": ["b", "c", "d"]}
+        graph = {"a": ["b", "c", "d"], "b": [], "c": [], "d": []}
         ids = bfs_collect_ids(lambda n: n in graph, _neighbors(graph), "a", depth=1, max_nodes=2)
         assert len(ids) == 2
         assert "a" in ids
 
     def test_nodes_failing_contains_are_skipped(self) -> None:
-        graph = {"a": ["b", "missing"], "b": ["c"]}
+        graph = {"a": ["b", "missing"], "b": ["c"], "c": []}
         ids = bfs_collect_ids(lambda n: n in {"a", "b", "c"}, _neighbors(graph), "a", depth=2)
         assert ids == ["a", "b", "c"]
